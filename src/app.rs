@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
-use crate::collector::{SysfsCollector, TemperatureCollector};
+use crate::collector::{SystemTemperatureCollector, TemperatureCollector};
 use crate::config::{Cli, Command, Config};
 use crate::daemon::{run_daemon, shutdown_channel};
 use crate::mcp::run_mcp_server;
@@ -15,7 +15,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Daemon { .. } => {
             let config = Config::from_cli(cli)?;
             let store = Arc::new(SqliteStore::open(&config.db_path)?);
-            let collector = Arc::new(SysfsCollector::new());
+            let collector = Arc::new(SystemTemperatureCollector::new());
             let (shutdown_tx, shutdown_rx) = shutdown_channel();
 
             tokio::spawn(async move {
@@ -31,7 +31,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             run_mcp_server(db.clone(), audit_log.clone()).await?;
         }
         Command::Once { db, save } => {
-            let collector = SysfsCollector::new();
+            let collector = SystemTemperatureCollector::new();
             let readings = collector.collect()?;
             let json = serde_json::to_string_pretty(&readings)?;
             println!("{json}");

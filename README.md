@@ -47,7 +47,8 @@ Then open [http://localhost:8080](http://localhost:8080):
 
 ## Requirements
 
-- Linux with `/sys/class/thermal` (for live readings)
+- Linux with `/sys/class/thermal` and/or `/sys/class/hwmon` (for live readings)
+- Optional: NVIDIA GPU + `nvidia-smi` in `PATH` for GPU temperatures
 - Docker (for build, test, lint)
 - Optional: `TEMPCHECK_MCP_TOKEN` when MCP auth is enabled
 

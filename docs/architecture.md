@@ -5,16 +5,20 @@ tempcheck has three runtime surfaces: a polling daemon, a one-shot CLI, and an M
 ```mermaid
 flowchart LR
   subgraph host [Linux host]
-    sysfs["/sys/class/thermal"]
+    thermal["/sys/class/thermal"]
+    hwmon["/sys/class/hwmon"]
+    nvidia["nvidia-smi"]
   end
   subgraph tempcheck [tempcheck]
-    collector[SysfsCollector]
+    collector[SystemTemperatureCollector]
     daemon[Daemon loop]
     sqlite[(SQLite)]
     mcp[MCP server]
   end
   agent[AI agent]
-  sysfs --> collector
+  thermal --> collector
+  hwmon --> collector
+  nvidia --> collector
   collector --> daemon
   daemon --> sqlite
   collector --> mcp
@@ -26,7 +30,7 @@ flowchart LR
 
 | Module | Role |
 |--------|------|
-| `collector` | Reads millidegree values from thermal zones |
+| `collector` | Reads temperatures from thermal zones, hwmon, and NVIDIA GPUs |
 | `storage` | SQLite schema, inserts, time-range analysis |
 | `daemon` | Tokio interval loop with graceful shutdown |
 | `mcp` | rmcp tools for live + historical queries |

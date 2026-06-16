@@ -12,7 +12,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::collector::{SensorReading, SysfsCollector, TemperatureCollector};
+use crate::collector::{SensorReading, SystemTemperatureCollector, TemperatureCollector};
 use crate::storage::{AnalysisResult, StoreError, TemperatureStore};
 
 #[derive(Clone)]
@@ -39,7 +39,7 @@ pub async fn run_web_server(
 ) -> Result<()> {
     let state = WebState {
         store,
-        collector: Arc::new(SysfsCollector::new()),
+        collector: Arc::new(SystemTemperatureCollector::new()),
     };
     let app = router(state);
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
