@@ -246,7 +246,11 @@ impl TemperatureCollector for NvidiaSmiCollector {
         let stdout = String::from_utf8(output.stdout)
             .map_err(|e| CollectorError::Io(format!("parse nvidia-smi output: {e}")))?;
         let mut out = Vec::new();
-        for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
             let parts: Vec<&str> = line.split(',').map(|x| x.trim()).collect();
             if parts.len() < 3 {
                 return Err(CollectorError::InvalidReading {
@@ -257,10 +261,13 @@ impl TemperatureCollector for NvidiaSmiCollector {
             let gpu_index = parts[0];
             let gpu_name = parts[1];
             let temp_raw = parts[2].to_string();
-            let temperature_c: f64 = temp_raw.parse().map_err(|_| CollectorError::InvalidReading {
-                path: "nvidia-smi stdout".to_string(),
-                value: line.to_string(),
-            })?;
+            let temperature_c: f64 =
+                temp_raw
+                    .parse()
+                    .map_err(|_| CollectorError::InvalidReading {
+                        path: "nvidia-smi stdout".to_string(),
+                        value: line.to_string(),
+                    })?;
             out.push(SensorReading {
                 sensor_name: format!("nvidia:{gpu_index}:{gpu_name}"),
                 temperature_c,
