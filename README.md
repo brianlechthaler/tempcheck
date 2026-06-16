@@ -30,6 +30,21 @@ See [Getting started](docs/getting-started.md) for setup details.
 - [Security threat model](docs/security/threat-model.md)
 - [Security audit findings](docs/security/audit-findings.md)
 
+## Web UI usage
+
+The web UI serves both current and historical readings from SQLite.
+
+```bash
+# Start the UI
+docker compose up --build web
+```
+
+Then open [http://localhost:8080](http://localhost:8080):
+
+- `Current temperature`: latest reading per thermal zone.
+- `History`: recent readings over time for trend checks.
+- `Refresh`: fetches updated data without restarting the service.
+
 ## Requirements
 
 - Linux with `/sys/class/thermal` (for live readings)
