@@ -8,4 +8,4 @@
 - [x] `make docker-lint` — fmt + clippy clean
 - [x] `make docker-coverage` — ~90% line coverage on library code
 - [x] Security audit documented in `docs/security/audit-findings.md` (0 critical/high)
-- [ ] CI passes on GitHub Actions
+- [x] CI passes on GitHub Actions
