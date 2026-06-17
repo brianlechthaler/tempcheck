@@ -12,7 +12,13 @@ tempcheck mcp --db tempcheck.db --audit-log /var/log/tempcheck/audit.jsonl
 
 ### get_current_temperature@1
 
-Reads live values from `/sys/class/thermal`. No database required.
+Reads live values from all available sources:
+
+- `/sys/class/thermal` thermal zones
+- `/sys/class/hwmon` hardware monitor sensors
+- NVIDIA GPU temperatures via `nvidia-smi` (when available)
+
+No database required.
 
 Parameters:
 

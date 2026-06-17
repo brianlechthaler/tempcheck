@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,220 @@ impl TemperatureCollector for SysfsCollector {
     }
 }
 
+/// Reads Linux hwmon sensors from `/sys/class/hwmon`.
+#[derive(Debug, Clone, Default)]
+pub struct HwmonCollector {
+    hwmon_root: PathBuf,
+}
+
+impl HwmonCollector {
+    pub fn new() -> Self {
+        Self {
+            hwmon_root: PathBuf::from("/sys/class/hwmon"),
+        }
+    }
+
+    pub fn with_root(root: impl Into<PathBuf>) -> Self {
+        Self {
+            hwmon_root: root.into(),
+        }
+    }
+}
+
+impl TemperatureCollector for HwmonCollector {
+    fn collect(&self) -> Result<Vec<SensorReading>, CollectorError> {
+        if !self.hwmon_root.is_dir() {
+            return Err(CollectorError::SysfsMissing(
+                self.hwmon_root.display().to_string(),
+            ));
+        }
+
+        let entries = fs::read_dir(&self.hwmon_root)
+            .map_err(|e| CollectorError::Io(format!("read {}: {e}", self.hwmon_root.display())))?;
+        let mut out = Vec::new();
+
+        for entry in entries {
+            let entry = entry.map_err(|e| CollectorError::Io(e.to_string()))?;
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+
+            let hwmon_name = fs::read_to_string(dir.join("name"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    dir.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+
+            let files = fs::read_dir(&dir)
+                .map_err(|e| CollectorError::Io(format!("read {}: {e}", dir.display())))?;
+            for file_entry in files {
+                let file_entry = file_entry.map_err(|e| CollectorError::Io(e.to_string()))?;
+                let file_name = file_entry.file_name().to_string_lossy().into_owned();
+                if !file_name.starts_with("temp") || !file_name.ends_with("_input") {
+                    continue;
+                }
+
+                let sensor_id = file_name
+                    .trim_start_matches("temp")
+                    .trim_end_matches("_input")
+                    .to_string();
+                let label_path = dir.join(format!("temp{sensor_id}_label"));
+                let label = fs::read_to_string(&label_path)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("temp{sensor_id}"));
+
+                let input_path = file_entry.path();
+                let raw = fs::read_to_string(&input_path)
+                    .map_err(|e| CollectorError::Io(format!("read {}: {e}", input_path.display())))?
+                    .trim()
+                    .to_string();
+
+                let milli_c: i64 = raw.parse().map_err(|_| CollectorError::InvalidReading {
+                    path: input_path.display().to_string(),
+                    value: raw,
+                })?;
+
+                out.push(SensorReading {
+                    sensor_name: format!("hwmon:{hwmon_name}:{label}"),
+                    temperature_c: milli_c as f64 / 1000.0,
+                    recorded_at: Utc::now(),
+                });
+            }
+        }
+
+        out.sort_by(|a, b| a.sensor_name.cmp(&b.sensor_name));
+        Ok(out)
+    }
+}
+
+/// Reads NVIDIA GPU temperatures from the `nvidia-smi` CLI.
+#[derive(Debug, Clone, Default)]
+pub struct NvidiaSmiCollector {
+    executable: PathBuf,
+}
+
+impl NvidiaSmiCollector {
+    pub fn new() -> Self {
+        Self {
+            executable: PathBuf::from("nvidia-smi"),
+        }
+    }
+
+    pub fn with_executable(path: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: path.into(),
+        }
+    }
+}
+
+impl TemperatureCollector for NvidiaSmiCollector {
+    fn collect(&self) -> Result<Vec<SensorReading>, CollectorError> {
+        let output = Command::new(&self.executable)
+            .args([
+                "--query-gpu=index,name,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()
+            .map_err(|e| CollectorError::Io(format!("exec {}: {e}", self.executable.display())))?;
+
+        if !output.status.success() {
+            return Err(CollectorError::Io(format!(
+                "{} exited with status {status}",
+                self.executable.display(),
+                status = output.status
+            )));
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|e| CollectorError::Io(format!("parse nvidia-smi output: {e}")))?;
+        let mut out = Vec::new();
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let parts: Vec<&str> = line.split(',').map(|x| x.trim()).collect();
+            if parts.len() < 3 {
+                return Err(CollectorError::InvalidReading {
+                    path: "nvidia-smi stdout".to_string(),
+                    value: line.to_string(),
+                });
+            }
+            let gpu_index = parts[0];
+            let gpu_name = parts[1];
+            let temp_raw = parts[2].to_string();
+            let temperature_c: f64 =
+                temp_raw
+                    .parse()
+                    .map_err(|_| CollectorError::InvalidReading {
+                        path: "nvidia-smi stdout".to_string(),
+                        value: line.to_string(),
+                    })?;
+            out.push(SensorReading {
+                sensor_name: format!("nvidia:{gpu_index}:{gpu_name}"),
+                temperature_c,
+                recorded_at: Utc::now(),
+            });
+        }
+
+        Ok(out)
+    }
+}
+
+/// Best-effort collector that merges all available sensor backends.
+#[derive(Debug, Clone, Default)]
+pub struct SystemTemperatureCollector;
+
+impl SystemTemperatureCollector {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl TemperatureCollector for SystemTemperatureCollector {
+    fn collect(&self) -> Result<Vec<SensorReading>, CollectorError> {
+        let mut all = Vec::new();
+        let mut errors = Vec::new();
+
+        for collector in [
+            Box::new(SysfsCollector::new()) as Box<dyn TemperatureCollector>,
+            Box::new(HwmonCollector::new()),
+            Box::new(NvidiaSmiCollector::new()),
+        ] {
+            match collector.collect() {
+                Ok(mut readings) => all.append(&mut readings),
+                Err(e) => errors.push(e),
+            }
+        }
+
+        if !all.is_empty() {
+            all.sort_by(|a, b| a.sensor_name.cmp(&b.sensor_name));
+            return Ok(all);
+        }
+
+        let msg = if errors.is_empty() {
+            "no temperature sensors found".to_string()
+        } else {
+            format!(
+                "no sensor source succeeded: {}",
+                errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )
+        };
+        Err(CollectorError::Io(msg))
+    }
+}
+
 /// Deterministic collector for unit tests.
 #[derive(Debug, Clone)]
 pub struct MockCollector {
@@ -147,6 +362,7 @@ impl TemperatureCollector for MockCollector {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn write_zone(dir: &Path, zone: &str, sensor_type: &str, milli_c: &str) {
@@ -208,5 +424,42 @@ mod tests {
     fn mock_collector_can_fail() {
         let collector = MockCollector::failing();
         assert!(collector.collect().is_err());
+    }
+
+    #[test]
+    fn hwmon_collector_reads_labeled_temps() {
+        let tmp = TempDir::new().unwrap();
+        let hwmon0 = tmp.path().join("hwmon0");
+        fs::create_dir_all(&hwmon0).unwrap();
+        fs::write(hwmon0.join("name"), "k10temp\n").unwrap();
+        fs::write(hwmon0.join("temp1_label"), "Tctl\n").unwrap();
+        fs::write(hwmon0.join("temp1_input"), "47000\n").unwrap();
+
+        let collector = HwmonCollector::with_root(tmp.path());
+        let readings = collector.collect().unwrap();
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].sensor_name, "hwmon:k10temp:Tctl");
+        assert!((readings[0].temperature_c - 47.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nvidia_smi_collector_reads_cli_output() {
+        let tmp = TempDir::new().unwrap();
+        let script = tmp.path().join("nvidia-smi");
+        fs::write(
+            &script,
+            "#!/usr/bin/env sh\necho \"0, NVIDIA RTX 4090, 53\"\necho \"1, NVIDIA RTX 4090, 55\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let collector = NvidiaSmiCollector::with_executable(&script);
+        let readings = collector.collect().unwrap();
+        assert_eq!(readings.len(), 2);
+        assert_eq!(readings[0].sensor_name, "nvidia:0:NVIDIA RTX 4090");
+        assert!((readings[0].temperature_c - 53.0).abs() < f64::EPSILON);
+        assert_eq!(readings[1].sensor_name, "nvidia:1:NVIDIA RTX 4090");
     }
 }

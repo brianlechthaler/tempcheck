@@ -10,9 +10,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tracing::info;
 
-use crate::collector::{SensorReading, SysfsCollector, TemperatureCollector};
+use crate::collector::{SensorReading, SystemTemperatureCollector, TemperatureCollector};
 use crate::storage::{AnalysisResult, StoreError, TemperatureStore};
 
 #[derive(Clone)]
@@ -39,7 +40,7 @@ pub async fn run_web_server(
 ) -> Result<()> {
     let state = WebState {
         store,
-        collector: Arc::new(SysfsCollector::new()),
+        collector: Arc::new(SystemTemperatureCollector::new()),
     };
     let app = router(state);
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
@@ -67,15 +68,20 @@ async fn index() -> impl IntoResponse {
 }
 
 async fn get_current(State(state): State<WebState>) -> Result<Json<Vec<SensorReading>>, ApiError> {
-    let readings = state
-        .collector
-        .collect()
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    if !readings.is_empty() {
-        state
-            .store
-            .insert_readings(&readings)
-            .map_err(map_store_error)?;
+    let mut readings =
+        latest_sensor_readings(state.store.as_ref(), 512).map_err(map_store_error)?;
+    if readings.is_empty() {
+        // Fallback for web-only mode with no daemon writes yet.
+        readings = state
+            .collector
+            .collect()
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if !readings.is_empty() {
+            state
+                .store
+                .insert_readings(&readings)
+                .map_err(map_store_error)?;
+        }
     }
     Ok(Json(readings))
 }
@@ -108,6 +114,22 @@ fn map_store_error(e: StoreError) -> ApiError {
         }
         StoreError::Db(msg) => ApiError::internal(msg),
     }
+}
+
+fn latest_sensor_readings(
+    store: &dyn TemperatureStore,
+    row_limit: usize,
+) -> Result<Vec<SensorReading>, StoreError> {
+    let recent = store.recent_readings(None, row_limit)?;
+    let mut seen = HashSet::new();
+    let mut latest = Vec::new();
+    for reading in recent {
+        if seen.insert(reading.sensor_name.clone()) {
+            latest.push(reading);
+        }
+    }
+    latest.sort_by(|a, b| a.sensor_name.cmp(&b.sensor_name));
+    Ok(latest)
 }
 
 struct ApiError {
@@ -373,6 +395,7 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::http::Request;
+    use chrono::Duration;
     use tower::util::ServiceExt;
 
     use crate::collector::MockCollector;
@@ -544,5 +567,52 @@ mod tests {
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(body.contains("cpu"));
         assert!(body.contains("41.5"));
+    }
+
+    #[tokio::test]
+    async fn current_returns_latest_reading_per_sensor_from_store() {
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+        let now = Utc::now();
+        store
+            .insert_readings(&[
+                SensorReading {
+                    sensor_name: "nvidia:0:RTX".to_string(),
+                    temperature_c: 52.0,
+                    recorded_at: now - Duration::minutes(2),
+                },
+                SensorReading {
+                    sensor_name: "nvidia:0:RTX".to_string(),
+                    temperature_c: 55.0,
+                    recorded_at: now - Duration::minutes(1),
+                },
+                SensorReading {
+                    sensor_name: "hwmon:k10temp:Tctl".to_string(),
+                    temperature_c: 48.0,
+                    recorded_at: now,
+                },
+            ])
+            .unwrap();
+
+        let state = WebState {
+            store,
+            collector: Arc::new(MockCollector::failing()),
+        };
+        let app = router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/current")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 32 * 1024).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("hwmon:k10temp:Tctl"));
+        assert!(body.contains("nvidia:0:RTX"));
+        assert!(body.contains("55.0"));
+        assert!(!body.contains("52.0"));
     }
 }

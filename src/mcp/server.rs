@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::audit::{AuditEvent, AuditSink, FileAuditSink, MultiAuditSink, StderrAuditSink};
-use crate::collector::{SysfsCollector, TemperatureCollector};
+use crate::collector::{SystemTemperatureCollector, TemperatureCollector};
 use crate::config::{DEFAULT_MCP_TOKEN_ENV, MAX_RESPONSE_BYTES};
 use crate::storage::{SqliteStore, TemperatureStore};
 
@@ -73,7 +73,7 @@ impl TemperatureMcpService {
     pub fn new(db_path: impl AsRef<Path>, audit_log: Option<std::path::PathBuf>) -> Result<Self> {
         let store =
             Arc::new(SqliteStore::open(db_path).context("failed to open temperature database")?);
-        let collector: Arc<dyn TemperatureCollector> = Arc::new(SysfsCollector::new());
+        let collector: Arc<dyn TemperatureCollector> = Arc::new(SystemTemperatureCollector::new());
         let expected_token = std::env::var(DEFAULT_MCP_TOKEN_ENV).ok();
 
         let mut sinks: Vec<Arc<dyn AuditSink>> = vec![Arc::new(StderrAuditSink)];
@@ -138,7 +138,7 @@ impl TemperatureMcpService {
 impl TemperatureMcpService {
     #[tool(
         name = "get_current_temperature",
-        description = "get_current_temperature@1 — Read live system thermal sensor readings from /sys/class/thermal."
+        description = "get_current_temperature@1 — Read live system temperatures from thermal sysfs, hwmon, and NVIDIA GPUs (when available)."
     )]
     async fn get_current_temperature(
         &self,
@@ -226,7 +226,7 @@ impl ServerHandler for TemperatureMcpService {
         ServerInfo {
             instructions: Some(
                 "Temperature monitoring MCP server. Tools are version-pinned: \
-                 get_current_temperature@1 reads live sensors; analyze_temperature@1 \
+                 get_current_temperature@1 reads live sensors from thermal sysfs, hwmon, and NVIDIA GPUs when available; analyze_temperature@1 \
                  queries historical SQLite data. Set TEMPCHECK_MCP_TOKEN and pass \
                  auth_token when auth is enabled."
                     .into(),
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn authorize_allows_when_no_token_configured() {
         let store = Arc::new(SqliteStore::in_memory().unwrap());
-        let svc = test_service(store, Arc::new(SysfsCollector::new()), None);
+        let svc = test_service(store, Arc::new(SystemTemperatureCollector::new()), None);
         assert!(svc.authorize(None).is_ok());
     }
 
@@ -278,7 +278,7 @@ mod tests {
         let store = Arc::new(SqliteStore::in_memory().unwrap());
         let svc = test_service(
             store,
-            Arc::new(SysfsCollector::new()),
+            Arc::new(SystemTemperatureCollector::new()),
             Some("secret".to_string()),
         );
         assert!(svc.authorize(None).is_err());
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn server_info_lists_tools() {
         let store = Arc::new(SqliteStore::in_memory().unwrap());
-        let svc = test_service(store, Arc::new(SysfsCollector::new()), None);
+        let svc = test_service(store, Arc::new(SystemTemperatureCollector::new()), None);
         let info = svc.get_info();
         assert!(info
             .instructions

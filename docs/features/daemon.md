@@ -10,7 +10,10 @@ tempcheck daemon --db tempcheck.db --interval-secs 30
 
 ## Behavior
 
-- Reads all `thermal_zone*` entries under `/sys/class/thermal`
+- Reads all available sensors from:
+  - `thermal_zone*` entries under `/sys/class/thermal`
+  - `temp*_input` entries under `/sys/class/hwmon`
+  - NVIDIA GPUs via `nvidia-smi` when installed
 - Inserts one row per sensor per tick
 - Logs structured events to stderr via `tracing`
 - Shuts down cleanly on SIGINT (Ctrl+C)
